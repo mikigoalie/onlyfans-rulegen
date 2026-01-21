@@ -3,6 +3,7 @@ name: Generate dynamic rules
 on:
   schedule:
     - cron: "17 */6 * * *" # run every 6 hours at 17 minutes past hour
+  workflow_dispatch:
 permissions:
   contents: write
 env:
