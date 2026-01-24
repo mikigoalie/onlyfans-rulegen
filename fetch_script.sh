@@ -34,7 +34,7 @@ if [ $? -ne 0 ]; then
 fi
 
 # Fetch app.js to extract app token
-APP_JS=$(curl --silent --show-error "https://static2.onlyfans.com/static/prod/f/202601231452-2826214280/app.js")
+APP_JS=$(curl --silent --show-error "https://static2.onlyfans.com/static/prod/f/$TIMESTAMP/app.js")
 if [ -z "$APP_JS" ]; then
     echo "Failed to download app.js"
     exit 1
