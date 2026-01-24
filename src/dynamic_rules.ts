@@ -29,6 +29,7 @@ interface DynamicRules {
     suffix: string
     static_param: string
     revision: string
+    app_token: string
     remove_headers: string[]
     checksum_indexes: number[]
     checksum_constant: number
@@ -87,6 +88,7 @@ function getRules(ast: t.Node): DynamicRules | undefined {
         suffix,
         static_param: staticParam,
         revision: process.argv[3] || "unknown",
+        app_token: process.argv[4] || "",
         remove_headers: [
           "user_id"
         ],

@@ -65,9 +65,24 @@ jobs:
             exit 1
         fi
 
+        # Fetch app.js to extract app token
+        APP_JS=$(./curl-impersonate/curl_chrome116 --silent --show-error "https://static2.onlyfans.com/static/prod/f/202601231452-2826214280/app.js")
+        if [ -z "$APP_JS" ]; then
+            echo "Failed to download app.js"
+            exit 1
+        fi
+
+        # Extract app token from app.js
+        APP_TOKEN=$(echo "$APP_JS" | grep -oP ',\s*He\s*=\s*"\K[a-f0-9]{32}(?=")')
+        if [ -z "$APP_TOKEN" ]; then
+            echo "Failed to extract app token from app.js"
+            exit 1
+        fi
+
         script_path="$OUTPUT_FILE"
         script_id=$(basename $script_path | tr -d ".js")
         echo "NEW_SCRIPT_ID=$script_id" >> $GITHUB_ENV
+        echo "APP_TOKEN=$APP_TOKEN" >> $GITHUB_ENV
 
     - name: Compare old and new script
       id: compare-script-ids
@@ -120,7 +135,7 @@ jobs:
     - name: Generate dynamic rules
       if: steps.compare-script-ids.outputs.is_new_script == 'true'
       run: |
-        rules=$(npm run --silent dynamic-rules -- $SCRIPTS_DIR/deobfuscated/$NEW_SCRIPT_ID.js $NEW_SCRIPT_ID)
+        rules=$(npm run --silent dynamic-rules -- $SCRIPTS_DIR/deobfuscated/$NEW_SCRIPT_ID.js $NEW_SCRIPT_ID $APP_TOKEN)
         if [ $? -ne 0 ]; then
             echo "Failed to generate dynamic rules"
             exit 1

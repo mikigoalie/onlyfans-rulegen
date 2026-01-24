@@ -33,4 +33,18 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-echo "$OUTPUT_FILE"
+# Fetch app.js to extract app token
+APP_JS=$(curl --silent --show-error "https://static2.onlyfans.com/static/prod/f/202601231452-2826214280/app.js")
+if [ -z "$APP_JS" ]; then
+    echo "Failed to download app.js"
+    exit 1
+fi
+
+# Extract app token from app.js
+APP_TOKEN=$(echo "$APP_JS" | grep -oP ',\s*He\s*=\s*"\K[a-f0-9]{32}(?=")')
+if [ -z "$APP_TOKEN" ]; then
+    echo "Failed to extract app token from app.js"
+    exit 1
+fi
+
+echo "$OUTPUT_FILE:$APP_TOKEN"
