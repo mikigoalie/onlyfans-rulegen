@@ -89,7 +89,10 @@ function getRules(ast: t.Node): DynamicRules | undefined {
         }
     });
 
-    if (!prefix || !suffix || !staticParam || !revision) return;
+    if (!prefix || !suffix || !staticParam || !revision) {
+        console.error("Failed to extract all necessary parameters.");
+        return undefined;
+    }
 
     return {
         end: suffix,
