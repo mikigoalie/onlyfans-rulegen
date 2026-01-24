@@ -72,7 +72,13 @@ jobs:
     - name: Compare old and new script
       id: compare-script-ids
       run: |
-        if [ "$NEW_SCRIPT_ID" == "$OLD_SCRIPT_ID" ]; then
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          OLD_SCRIPT_ID_TO_CHECK=""
+        else
+          OLD_SCRIPT_ID_TO_CHECK="${OLD_SCRIPT_ID}"
+        fi
+        
+        if [ "$NEW_SCRIPT_ID" == "$OLD_SCRIPT_ID_TO_CHECK" ]; then
           echo "is_new_script=false" >> "$GITHUB_OUTPUT"
         else
           echo "is_new_script=true" >> "$GITHUB_OUTPUT"
@@ -114,7 +120,7 @@ jobs:
     - name: Generate dynamic rules
       if: steps.compare-script-ids.outputs.is_new_script == 'true'
       run: |
-        rules=$(npm run --silent dynamic-rules -- $SCRIPTS_DIR/deobfuscated/$NEW_SCRIPT_ID.js $SCRIPTS_DIR/obfuscated/$NEW_SCRIPT_ID.js)
+        rules=$(npm run --silent dynamic-rules -- $SCRIPTS_DIR/deobfuscated/$NEW_SCRIPT_ID.js $NEW_SCRIPT_ID)
         if [ $? -ne 0 ]; then
             echo "Failed to generate dynamic rules"
             exit 1

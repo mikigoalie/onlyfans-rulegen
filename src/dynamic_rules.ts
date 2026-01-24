@@ -3,12 +3,6 @@ import traverse from "@babel/traverse";
 import * as t from "@babel/types";
 import { readFileSync } from "fs";
 
-// Extract revision ID from obfuscated script using regex
-function extractRevisionFromObfuscated(obfuscatedCode: string): string | undefined {
-    const match = obfuscatedCode.match(/SENTRY_RELEASE\s*=\s*{[^}]*id:\s*"([^"]+)"/);
-    return match ? match[1] : undefined;
-}
-
 /**
  {
   "end": "677cfb73",
@@ -33,8 +27,8 @@ interface DynamicRules {
     format: string
     prefix: string
     suffix: string
-    revision: string
     static_param: string
+    revision: string
     remove_headers: string[]
     checksum_indexes: number[]
     checksum_constant: number
@@ -46,14 +40,8 @@ function getRules(ast: t.Node): DynamicRules | undefined {
     let checksumIndexes: number[] = [];
     let prefix: string | undefined;
     let suffix: string | undefined;
-    let revision: string | undefined;
 
     traverse(ast, {
-        ObjectProperty(path) {
-            if (t.isIdentifier(path.node.key) && path.node.key.name === 'id' && t.isStringLiteral(path.node.value)) {
-                revision = path.node.value.value;
-            }
-        },
         ArrayExpression(path) {
             const elements = path.node.elements;
             if (!t.isStringLiteral(elements[0])) return;
@@ -89,10 +77,7 @@ function getRules(ast: t.Node): DynamicRules | undefined {
         }
     });
 
-    if (!prefix || !suffix || !staticParam || !revision) {
-        console.error("Failed to extract all necessary parameters.");
-        return undefined;
-    }
+    if (!prefix || !suffix || !staticParam) return;
 
     return {
         end: suffix,
@@ -100,8 +85,8 @@ function getRules(ast: t.Node): DynamicRules | undefined {
         format: `${prefix}:{}:{:x}:${suffix}`,
         prefix,
         suffix,
-        revision,
         static_param: staticParam,
+        revision: process.argv[3] || "unknown",
         remove_headers: [
           "user_id"
         ],
@@ -110,19 +95,10 @@ function getRules(ast: t.Node): DynamicRules | undefined {
     };
 }
 
-const deobfuscatedCode = readFileSync(process.argv[2], "utf8");
-const obfuscatedCode = readFileSync(process.argv[3], "utf8");
-
-const ast = parser.parse(deobfuscatedCode);
+const ast = parser.parse(readFileSync(process.argv[2], "utf8"));
 const rules = getRules(ast);
 if (!rules) {
     process.exit(1);
-}
-
-// Extract revision from obfuscated code and add it to rules
-const revision = extractRevisionFromObfuscated(obfuscatedCode);
-if (revision) {
-    rules.revision = revision;
 }
 
 console.log(JSON.stringify(rules))
