@@ -3,6 +3,12 @@ import traverse from "@babel/traverse";
 import * as t from "@babel/types";
 import { readFileSync } from "fs";
 
+// Extract revision ID from obfuscated script using regex
+function extractRevisionFromObfuscated(obfuscatedCode: string): string | undefined {
+    const match = obfuscatedCode.match(/SENTRY_RELEASE\s*=\s*{[^}]*id:\s*"([^"]+)"/);
+    return match ? match[1] : undefined;
+}
+
 /**
  {
   "end": "677cfb73",
@@ -101,10 +107,19 @@ function getRules(ast: t.Node): DynamicRules | undefined {
     };
 }
 
-const ast = parser.parse(readFileSync(process.argv[2], "utf8"));
+const deobfuscatedCode = readFileSync(process.argv[2], "utf8");
+const obfuscatedCode = readFileSync(process.argv[3], "utf8");
+
+const ast = parser.parse(deobfuscatedCode);
 const rules = getRules(ast);
 if (!rules) {
     process.exit(1);
+}
+
+// Extract revision from obfuscated code and add it to rules
+const revision = extractRevisionFromObfuscated(obfuscatedCode);
+if (revision) {
+    rules.revision = revision;
 }
 
 console.log(JSON.stringify(rules))

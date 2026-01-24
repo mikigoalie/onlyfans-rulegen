@@ -114,7 +114,7 @@ jobs:
     - name: Generate dynamic rules
       if: steps.compare-script-ids.outputs.is_new_script == 'true'
       run: |
-        rules=$(npm run --silent dynamic-rules -- $SCRIPTS_DIR/deobfuscated/$NEW_SCRIPT_ID.js)
+        rules=$(npm run --silent dynamic-rules -- $SCRIPTS_DIR/deobfuscated/$NEW_SCRIPT_ID.js $SCRIPTS_DIR/obfuscated/$NEW_SCRIPT_ID.js)
         if [ $? -ne 0 ]; then
             echo "Failed to generate dynamic rules"
             exit 1
