@@ -1,1 +1,5 @@
+
+> onlyfans-deobfuscator@1.0.1 dynamic-rules
+> node ./build/dynamic_rules.js ./scripts/deobfuscated/202601231452-2826214280.js 202601231452-2826214280 33d57ade8c02dbc5a333db99ff9ae26a
+
 {"end":"69738b53","start":"53811","format":"53811:{}:{:x}:69738b53","prefix":"53811","suffix":"69738b53","static_param":"FoE1KPix9NQfeWfrMzMQnFwlbjABhAyR","revision":"202601231452-2826214280","app_token":"33d57ade8c02dbc5a333db99ff9ae26a","remove_headers":["user_id"],"checksum_indexes":[15,3,20,28,18,36,38,3,34,25,23,26,2,29,4,13,24,4,27,9,5,33,6,14,29,22,6,5,39,13,25,29],"checksum_constant":159}
