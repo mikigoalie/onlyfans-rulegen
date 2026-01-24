@@ -27,6 +27,7 @@ interface DynamicRules {
     format: string
     prefix: string
     suffix: string
+    revision: string
     static_param: string
     remove_headers: string[]
     checksum_indexes: number[]
@@ -39,8 +40,14 @@ function getRules(ast: t.Node): DynamicRules | undefined {
     let checksumIndexes: number[] = [];
     let prefix: string | undefined;
     let suffix: string | undefined;
+    let revision: string | undefined;
 
     traverse(ast, {
+        ObjectProperty(path) {
+            if (t.isIdentifier(path.node.key) && path.node.key.name === 'id' && t.isStringLiteral(path.node.value)) {
+                revision = path.node.value.value;
+            }
+        },
         ArrayExpression(path) {
             const elements = path.node.elements;
             if (!t.isStringLiteral(elements[0])) return;
@@ -76,7 +83,7 @@ function getRules(ast: t.Node): DynamicRules | undefined {
         }
     });
 
-    if (!prefix || !suffix || !staticParam) return;
+    if (!prefix || !suffix || !staticParam || !revision) return;
 
     return {
         end: suffix,
@@ -84,6 +91,7 @@ function getRules(ast: t.Node): DynamicRules | undefined {
         format: `${prefix}:{}:{:x}:${suffix}`,
         prefix,
         suffix,
+        revision,
         static_param: staticParam,
         remove_headers: [
           "user_id"
