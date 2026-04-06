@@ -152,4 +152,4 @@ jobs:
         gh variable set OLD_SCRIPT_ID --body "$NEW_SCRIPT_ID"
         gh variable list
       env:
-        GITHUB_TOKEN: ${{ secrets.VARS_TOKEN }}
+        GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
