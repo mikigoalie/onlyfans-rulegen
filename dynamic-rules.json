@@ -1,26 +1,23 @@
 {
-  "end": "69d3a57d",
-  "start": "57350",
-  "format": "57350:{}:{:x}:69d3a57d",
-  "prefix": "57350",
-  "suffix": "69d3a57d",
-  "revision": "202604061221-7a31efacde",
+  "end": "69d50ddb",
+  "start": "57405",
+  "format": "57405:{}:{:x}:69d50ddb",
+  "prefix": "57405",
+  "suffix": "69d50ddb",
+  "revision": "202604071359-79c40c7d89",
   "app_token": "33d57ade8c02dbc5a333db99ff9ae26a",
-  "static_param": "otlHraUS6jQPs4bwVa3Oyd2vs68Do5O6",
+  "static_param": "Z0XSvSCtKAY7vwuMyCrNyXXMfnKTSJjE",
   "remove_headers": [
     "user_id"
   ],
   "checksum_indexes": [
-    35,
-    7,
-    28,
-    22,
+    21,
+    0,
+    20,
     19,
-    26,
-    27,
-    4,
-    35,
-    26
+    34,
+    12,
+    16
   ],
-  "checksum_constant": 417
+  "checksum_constant": -75
 }
