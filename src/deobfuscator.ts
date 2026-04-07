@@ -71,8 +71,8 @@ class ObfuscatedStrings {
     const hasStringsInit = node.body.body.some((stmt) => {
       if (!t.isVariableDeclaration(stmt)) return false;
       for (const decl of stmt.declarations) {
-        if (!decl.init) continue;
         if (
+          decl.init &&
           t.isCallExpression(decl.init) &&
           t.isIdentifier(decl.init.callee, { name: obfStringsFunc })
         ) {
@@ -82,7 +82,6 @@ class ObfuscatedStrings {
       return false;
     });
     if (!hasStringsInit) return;
-
     if (!node.id) return;
 
     vm.runInContext(generate(node).code, vmContext);
@@ -90,38 +89,54 @@ class ObfuscatedStrings {
     return node.id.name;
   }
 
-  static findDecryptFunction(
-    path: NodePath<t.FunctionDeclaration>,
-    vmContext: vm.Context,
-    baseDecryptFunc: string
-  ): { name: string; binding?: Binding } | undefined {
-    const node = path.node;
-    const funcExpr = node.body.body;
-    if (node.params.length !== 2 || funcExpr.length !== 1) return;
-    if (!t.isReturnStatement(funcExpr[0]) || !funcExpr[0].argument) return;
+  // Core matcher used for both FunctionDeclaration and var/arrow wrappers
+  private static isWrapperCallTo(
+    funcNode:
+      | t.FunctionDeclaration
+      | t.FunctionExpression
+      | t.ArrowFunctionExpression,
+    baseName: string
+  ): boolean {
+    // params: exactly 2 identifiers
+    if (funcNode.params.length !== 2) return false;
+    const [p0, p1] = funcNode.params;
+    if (!t.isIdentifier(p0) || !t.isIdentifier(p1)) return false;
 
-    const ret = funcExpr[0].argument;
-    if (!t.isCallExpression(ret)) return;
-    if (!t.isIdentifier(ret.callee, { name: baseDecryptFunc })) return;
+    // Extract the "return ..." expression or concise arrow body
+    let retExpr: t.Expression | null = null;
 
-    const args = ret.arguments;
-    if (args.length !== 2) return;
-    const [a0, a1] = args;
+    if (t.isArrowFunctionExpression(funcNode)) {
+      if (t.isBlockStatement(funcNode.body)) {
+        const body = funcNode.body.body;
+        if (body.length !== 1 || !t.isReturnStatement(body[0])) return false;
+        if (!body[0].argument) return false;
+        retExpr = body[0].argument as t.Expression;
+      } else {
+        retExpr = funcNode.body as t.Expression;
+      }
+    } else {
+      const body = funcNode.body.body;
+      if (body.length !== 1 || !t.isReturnStatement(body[0])) return false;
+      if (!body[0].argument) return false;
+      retExpr = body[0].argument as t.Expression;
+    }
 
-    const isPlusOrMinus = (
-      op: any
-    ): op is t.BinaryExpression["operator"] => op === "-" || op === "+";
+    if (!retExpr || !t.isCallExpression(retExpr)) return false;
+    if (!t.isIdentifier(retExpr.callee, { name: baseName })) return false;
+    if (retExpr.arguments.length !== 2) return false;
+    const [a0, a1] = retExpr.arguments;
 
+    const isPlusMinus = (op: any) => op === "-" || op === "+";
     const isParam = (x: t.Node, id: t.Identifier) =>
       t.isIdentifier(x, { name: id.name });
 
-    const matchArg = (expr: t.Node, p0: t.Identifier, p1: t.Identifier) => {
-      if (t.isIdentifier(expr)) {
-        return isParam(expr, p0) || isParam(expr, p1);
+    const matchArg = (expr: t.Node): boolean => {
+      if (t.isIdentifier(expr) && (isParam(expr, p0) || isParam(expr, p1))) {
+        return true;
       }
       if (
         t.isBinaryExpression(expr) &&
-        isPlusOrMinus(expr.operator) &&
+        isPlusMinus(expr.operator) &&
         ((t.isIdentifier(expr.left) &&
           (isParam(expr.left, p0) || isParam(expr.left, p1)) &&
           t.isNumericLiteral(expr.right)) ||
@@ -134,32 +149,79 @@ class ObfuscatedStrings {
       return false;
     };
 
-    if (!t.isIdentifier(node.params[0]) || !t.isIdentifier(node.params[1]))
-      return;
-    const p0 = node.params[0] as t.Identifier;
-    const p1 = node.params[1] as t.Identifier;
+    return matchArg(a0 as t.Node) && matchArg(a1 as t.Node);
+  }
 
-    if (!matchArg(a0 as t.Node, p0, p1)) return;
-    if (!matchArg(a1 as t.Node, p0, p1)) return;
-
+  static findDecryptFunctionFromFuncDecl(
+    path: NodePath<t.FunctionDeclaration>,
+    vmContext: vm.Context,
+    baseDecryptFunc: string
+  ): { name: string; binding?: Binding } | undefined {
+    const node = path.node;
     if (!node.id) return;
+    if (!this.isWrapperCallTo(node, baseDecryptFunc)) return;
 
-    // Register in VM
     vm.runInContext(generate(node).code, vmContext);
-
-    // Ensure bindings are up-to-date
     path.scope.crawl();
-
-    // Try to fetch binding; may be undefined in some nested scopes
     const binding =
       path.scope.getBinding(node.id.name) ||
       path.parentPath.scope.getBinding(node.id.name) ||
       undefined;
 
-    // Remove wrapper function from code
     path.remove();
-
     return { name: node.id.name, binding };
+  }
+
+  static findDecryptFunctionFromVarDecl(
+    path: NodePath<t.VariableDeclarator>,
+    vmContext: vm.Context,
+    baseDecryptFunc: string
+  ): { name: string; binding?: Binding } | undefined {
+    const node = path.node;
+    if (!t.isIdentifier(node.id)) return;
+    const name = node.id.name;
+    const init = node.init;
+    if (!init) return;
+
+    let funcNode:
+      | t.FunctionExpression
+      | t.ArrowFunctionExpression
+      | null = null;
+
+    if (t.isFunctionExpression(init) || t.isArrowFunctionExpression(init)) {
+      funcNode = init;
+    }
+    if (!funcNode) return;
+
+    if (!this.isWrapperCallTo(funcNode, baseDecryptFunc)) return;
+
+    // Generate and eval its parent VariableDeclaration so the const/let binding exists in VM
+    const parentDecl = path.parentPath.node;
+    let code: string;
+    if (t.isVariableDeclaration(parentDecl)) {
+      code = generate(parentDecl).code;
+    } else {
+      // fallback: just define const name = <fn>;
+      code = `const ${name} = ${generate(funcNode).code};`;
+    }
+    vm.runInContext(code, vmContext);
+
+    // Ensure bindings are updated
+    path.scope.crawl();
+    const binding =
+      path.scope.getBinding(name) ||
+      path.parentPath.scope.getBinding(name) ||
+      undefined;
+
+    // Remove this declarator; if parent decl has no more, prune it
+    const varDeclPath = path.parentPath as NodePath<t.VariableDeclaration>;
+    if (varDeclPath.node.declarations.length === 1) {
+      varDeclPath.remove();
+    } else {
+      path.remove();
+    }
+
+    return { name, binding };
   }
 
   static shuffleObfuscatedStrings(
@@ -186,7 +248,6 @@ class ObfuscatedStrings {
 }
 
 class DecryptStrings {
-  // Original binding-based replacement (kept; works when binding exists)
   static decryptMapKeysByBinding(
     decyptFuncBinding: Binding,
     vmContext: vm.Context
@@ -197,13 +258,16 @@ class DecryptStrings {
       if (!refParentPath) continue;
       if (t.isReturnStatement(refParentPath.parent)) continue;
 
-      const code = generate(refParentPath.node).code;
-      const value = vm.runInContext(code, vmContext);
-      refParentPath.replaceWith(t.valueToNode(value));
+      try {
+        const code = generate(refParentPath.node).code;
+        const value = vm.runInContext(code, vmContext);
+        refParentPath.replaceWith(t.valueToNode(value));
+      } catch {
+        // ignore bad evals
+      }
     }
   }
 
-  // Fallback: directly evaluate call expressions by function name
   static decryptCallsByName(
     ast: t.File | t.Program,
     funcNames: Set<string>,
@@ -215,8 +279,6 @@ class DecryptStrings {
         if (!t.isIdentifier(node.callee)) return;
         if (!funcNames.has(node.callee.name)) return;
 
-        // Only attempt when arguments are safe (mostly literals/binary ops)
-        // We still eval the generated code; if it throws, skip gracefully.
         try {
           const code = generate(node).code;
           const value = vm.runInContext(code, vmContext);
@@ -412,46 +474,44 @@ function deobfuscate(source: string) {
   const decryptFuncNames = new Set<string>();
   let foundShuffle = false;
 
+  // 1) Find strings-array function
   traverse(ast, {
-    FunctionDeclaration(path: NodePath<t.FunctionDeclaration>) {
-      const funcName = ObfuscatedStrings.findStringsArray(path, decryptCtx);
-      if (funcName) {
-        funcObfStrings = funcName;
+    FunctionDeclaration(path) {
+      const name = ObfuscatedStrings.findStringsArray(path, decryptCtx);
+      if (name) {
+        funcObfStrings = name;
         path.stop();
-        return;
       }
     },
   });
-
   if (!funcObfStrings) {
     console.error("Strings function was not found");
     return;
   }
 
+  // 2) Find base decrypt
   traverse(ast, {
-    FunctionDeclaration(path: NodePath<t.FunctionDeclaration>) {
+    FunctionDeclaration(path) {
       if (!baseDecryptFunc) {
-        const funcName = ObfuscatedStrings.findBaseDecryptFunction(
+        const name = ObfuscatedStrings.findBaseDecryptFunction(
           path,
           decryptCtx,
           funcObfStrings!
         );
-        if (funcName) {
-          baseDecryptFunc = funcName;
-          return;
+        if (name) {
+          baseDecryptFunc = name;
         }
       }
     },
   });
-
   if (!baseDecryptFunc) {
     console.error("Base decrypt function was not found");
     return;
   }
 
-  // Execute the shuffler IIFE
+  // 3) Execute shuffler IIFE
   traverse(ast, {
-    CallExpression(path: NodePath<t.CallExpression>) {
+    CallExpression(path) {
       if (foundShuffle) return;
       const ok = ObfuscatedStrings.shuffleObfuscatedStrings(
         path,
@@ -462,50 +522,50 @@ function deobfuscate(source: string) {
     },
   });
 
-  // Collect wrappers that call base (and chain through discovered wrappers)
+  // 4) Collect wrappers: function declarations
   traverse(ast, {
-    FunctionDeclaration(path: NodePath<t.FunctionDeclaration>) {
-      const tryFind = (callee: string) =>
-        ObfuscatedStrings.findDecryptFunction(path, decryptCtx, callee);
-
-      // first try base
-      const r0 = tryFind(baseDecryptFunc!);
-      if (r0) {
-        decryptFuncNames.add(r0.name);
-        if (r0.binding) wrapperBindings.push(r0.binding);
-        return;
-      }
-
-      // then try already found wrappers
-      for (const name of decryptFuncNames) {
-        const r = tryFind(name);
-        if (r) {
-          decryptFuncNames.add(r.name);
-          if (r.binding) wrapperBindings.push(r.binding);
-          return;
-        }
+    FunctionDeclaration(path) {
+      const r = ObfuscatedStrings.findDecryptFunctionFromFuncDecl(
+        path,
+        decryptCtx,
+        baseDecryptFunc!
+      );
+      if (r) {
+        decryptFuncNames.add(r.name);
+        if (r.binding) wrapperBindings.push(r.binding);
       }
     },
   });
 
-  // Replace via bindings where available
+  // 5) Collect wrappers: variable declarators (function expr or arrow)
+  traverse(ast, {
+    VariableDeclarator(path) {
+      const r = ObfuscatedStrings.findDecryptFunctionFromVarDecl(
+        path,
+        decryptCtx,
+        baseDecryptFunc!
+      );
+      if (r) {
+        decryptFuncNames.add(r.name);
+        if (r.binding) wrapperBindings.push(r.binding);
+      }
+    },
+  });
+
+  // 6) Replace via bindings
   for (const b of wrapperBindings) {
     DecryptStrings.decryptMapKeysByBinding(b, decryptCtx);
   }
-  // Fallback: direct call-eval by function name
-  if (decryptFuncNames.size > 0) {
-    DecryptStrings.decryptCallsByName(ast, decryptFuncNames, decryptCtx);
-  } else {
-    console.error("No decrypt wrappers were found! Falling back to base only.");
-    // Also include base function name to catch direct base calls, if any
-    if (baseDecryptFunc) {
-      DecryptStrings.decryptCallsByName(ast, new Set([baseDecryptFunc]), decryptCtx);
-    }
-  }
 
+  // 7) Fallback: evaluate calls by name (wrappers and base)
+  const namesForEval = new Set<string>(decryptFuncNames);
+  namesForEval.add(baseDecryptFunc!);
+  DecryptStrings.decryptCallsByName(ast, namesForEval, decryptCtx);
+
+  // 8) Replace maps
   const mapReplacer = new MapReplacer();
   traverse(ast, {
-    VariableDeclarator(path: NodePath<t.VariableDeclarator>) {
+    VariableDeclarator(path) {
       const ok = mapReplacer.parseMap(path);
       if (!ok) return;
 
@@ -517,21 +577,24 @@ function deobfuscate(source: string) {
     },
   });
 
+  // 9) Simplify unwrapOrElse-like
   traverse(ast, {
-    CallExpression(path: NodePath<t.CallExpression>) {
+    CallExpression(path) {
       SimplifyIndexing.simplifyUnwrapOrElse(path);
     },
   });
 
+  // 10) Bracket -> dot
   const validIdentifierRegex =
     /^(?!(?:do|if|in|for|let|new|try|var|case|else|enum|eval|false|null|this|true|void|with|break|catch|class|const|super|throw|while|yield|delete|export|import|public|return|static|switch|typeof|default|extends|finally|package|private|continue|debugger|function|arguments|interface|protected|implements|instanceof)$)[$A-Z\_a-z]*$/;
 
   traverse(ast, {
-    MemberExpression(path: NodePath<t.MemberExpression>) {
+    MemberExpression(path) {
       let { object, property, computed } = path.node;
       if (!computed) return;
       if (!t.isStringLiteral(property)) return;
       if (!validIdentifierRegex.test(property.value)) return;
+
       path.replaceWith(
         t.memberExpression(object, t.identifier(property.value), false)
       );
