@@ -92,12 +92,32 @@ class ObfuscatedStrings {
       return;
     }
 
+    // Pre-capture the strings array under a stable VM variable name.
+    // This prevents infinite recursion when a later wrapper function is
+    // loaded into the VM under the same name as obfStringsFunc (e.g. "k"),
+    // which would overwrite the strings array and cause f → k → f → k loops.
+    const stableArrVar = `__stableArr_${obfStringsFunc}`;
+    vm.runInContext(`var ${stableArrVar} = ${obfStringsFunc}();`, vmContext);
+
+    // Patch f's body: replace every 0-arg call to obfStringsFunc with the
+    // stable array reference so f never relies on the global name at runtime.
+    path.traverse({
+      CallExpression(callPath) {
+        if (
+          t.isIdentifier(callPath.node.callee, { name: obfStringsFunc }) &&
+          callPath.node.arguments.length === 0
+        ) {
+          callPath.replaceWith(t.identifier(stableArrVar));
+        }
+      },
+    });
+
     vm.runInContext(generate(node).code, vmContext);
     path.remove();
     return node.id.name;
   }
 
-static findDecryptFunction(
+  static findDecryptFunction(
     path: NodePath<t.FunctionDeclaration>,
     vmContext: vm.Context,
     baseDecryptFunc: string
@@ -122,6 +142,8 @@ static findDecryptFunction(
     const isParam = (x: t.Node, id: t.Identifier) =>
       t.isIdentifier(x, { name: id.name });
 
+    // Handle both plain numeric literals and negated literals (e.g. -609
+    // which Babel parses as UnaryExpression(-, NumericLiteral(609))).
     const isNumericValue = (x: t.Node): boolean =>
       t.isNumericLiteral(x) ||
       (t.isUnaryExpression(x) &&
@@ -133,10 +155,7 @@ static findDecryptFunction(
       p0: t.Identifier,
       p1: t.Identifier
     ): boolean => {
-      if (
-        t.isIdentifier(expr) &&
-        (isParam(expr, p0) || isParam(expr, p1))
-      ) {
+      if (t.isIdentifier(expr) && (isParam(expr, p0) || isParam(expr, p1))) {
         return true;
       }
       if (
@@ -163,9 +182,7 @@ static findDecryptFunction(
     if (!matchArg(a1 as t.Node, p0, p1)) return;
 
     if (!node.id) {
-      console.error(
-        "Decode string function was found but its name undefined"
-      );
+      console.error("Decode string function was found but its name undefined");
       path.stop();
       return;
     }
@@ -173,9 +190,7 @@ static findDecryptFunction(
     vm.runInContext(generate(node).code, vmContext);
     const binding = path.parentPath.scope.getBinding(node.id.name);
     if (!binding) {
-      console.error(
-        `Decrypt function ${node.id.name} has no references`
-      );
+      console.error(`Decrypt function ${node.id.name} has no references`);
       path.stop();
       return;
     }
@@ -494,7 +509,6 @@ function deobfuscate(source: string) {
   }
   if (wrapperBindings.length === 0) {
     console.error("No decrypt wrappers were found!");
-    // continue anyway; sometimes base func is used directly in map
   }
 
   for (const b of wrapperBindings) {
