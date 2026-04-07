@@ -31,7 +31,9 @@ const binop = [
   "<=",
   "|>",
 ] as const;
+
 type BinaryOperator = (typeof binop)[number];
+
 const isBinaryOperator = (x: any): x is BinaryOperator => binop.includes(x);
 
 class ObfuscatedStrings {
@@ -41,10 +43,11 @@ class ObfuscatedStrings {
   ): string | undefined {
     const node = path.node;
     const funcExpr = node.body.body;
+
     if (node.params.length !== 0) return;
     if (funcExpr.length !== 2 || !t.isVariableDeclaration(funcExpr[0])) return;
 
-    const declarations = (funcExpr[0] as t.VariableDeclaration).declarations;
+    const declarations = funcExpr[0].declarations;
     if (declarations.length !== 1) return;
 
     const obfStrings = declarations[0];
@@ -53,6 +56,7 @@ class ObfuscatedStrings {
     for (const elemNode of obfStrings.init.elements) {
       if (!t.isStringLiteral(elemNode)) return;
     }
+
     if (!node.id) {
       console.error("Obf function was found but its name undefined");
       return;
@@ -73,8 +77,10 @@ class ObfuscatedStrings {
 
     const hasStringsInit = node.body.body.some((stmt) => {
       if (!t.isVariableDeclaration(stmt)) return false;
+
       for (const decl of stmt.declarations) {
         if (!decl.init) continue;
+
         if (
           t.isCallExpression(decl.init) &&
           t.isIdentifier(decl.init.callee, { name: obfStringsFunc })
@@ -82,8 +88,10 @@ class ObfuscatedStrings {
           return true;
         }
       }
+
       return false;
     });
+
     if (!hasStringsInit) return;
 
     if (!node.id) {
@@ -92,15 +100,9 @@ class ObfuscatedStrings {
       return;
     }
 
-    // Pre-capture the strings array under a stable VM variable name.
-    // This prevents infinite recursion when a later wrapper function is
-    // loaded into the VM under the same name as obfStringsFunc (e.g. "k"),
-    // which would overwrite the strings array and cause f → k → f → k loops.
     const stableArrVar = `__stableArr_${obfStringsFunc}`;
     vm.runInContext(`var ${stableArrVar} = ${obfStringsFunc}();`, vmContext);
 
-    // Patch f's body: replace every 0-arg call to obfStringsFunc with the
-    // stable array reference so f never relies on the global name at runtime.
     path.traverse({
       CallExpression(callPath) {
         if (
@@ -124,6 +126,7 @@ class ObfuscatedStrings {
   ): Binding | undefined {
     const node = path.node;
     const funcExpr = node.body.body;
+
     if (node.params.length !== 2 || funcExpr.length !== 1) return;
     if (!t.isReturnStatement(funcExpr[0]) || !funcExpr[0].argument) return;
 
@@ -142,8 +145,6 @@ class ObfuscatedStrings {
     const isParam = (x: t.Node, id: t.Identifier) =>
       t.isIdentifier(x, { name: id.name });
 
-    // Handle both plain numeric literals and negated literals (e.g. -609
-    // which Babel parses as UnaryExpression(-, NumericLiteral(609))).
     const isNumericValue = (x: t.Node): boolean =>
       t.isNumericLiteral(x) ||
       (t.isUnaryExpression(x) &&
@@ -158,6 +159,7 @@ class ObfuscatedStrings {
       if (t.isIdentifier(expr) && (isParam(expr, p0) || isParam(expr, p1))) {
         return true;
       }
+
       if (
         t.isBinaryExpression(expr) &&
         isPlusOrMinus(expr.operator) &&
@@ -170,13 +172,16 @@ class ObfuscatedStrings {
       ) {
         return true;
       }
+
       return false;
     };
 
-    if (!t.isIdentifier(node.params[0]) || !t.isIdentifier(node.params[1]))
+    if (!t.isIdentifier(node.params[0]) || !t.isIdentifier(node.params[1])) {
       return;
-    const p0 = node.params[0] as t.Identifier;
-    const p1 = node.params[1] as t.Identifier;
+    }
+
+    const p0 = node.params[0];
+    const p1 = node.params[1];
 
     if (!matchArg(a0 as t.Node, p0, p1)) return;
     if (!matchArg(a1 as t.Node, p0, p1)) return;
@@ -188,6 +193,7 @@ class ObfuscatedStrings {
     }
 
     vm.runInContext(generate(node).code, vmContext);
+
     const binding = path.parentPath.scope.getBinding(node.id.name);
     if (!binding) {
       console.error(`Decrypt function ${node.id.name} has no references`);
@@ -209,29 +215,70 @@ class ObfuscatedStrings {
     if (node.arguments.length !== 2) return;
     if (!t.isIdentifier(node.arguments[0], { name: funcObfStrings })) return;
     if (!t.isNumericLiteral(node.arguments[1])) return;
-    const code = generate(t.expressionStatement(node)).code;
 
+    const code = generate(t.expressionStatement(node)).code;
     vm.runInContext(code, vmContext);
+
     if (t.isUnaryExpression(path.parentPath.node)) {
       path.parentPath.remove();
     } else {
       path.remove();
     }
+
     return true;
   }
 }
 
 class DecryptStrings {
+  private static isStaticValue(node: t.Node): boolean {
+    if (
+      t.isStringLiteral(node) ||
+      t.isNumericLiteral(node) ||
+      t.isBooleanLiteral(node) ||
+      t.isNullLiteral(node)
+    ) {
+      return true;
+    }
+
+    if (
+      t.isUnaryExpression(node) &&
+      (node.operator === "-" || node.operator === "+") &&
+      t.isNumericLiteral(node.argument)
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
   static decryptMapKeys(decyptFuncBinding: Binding, vmContext: vm.Context) {
     const references = decyptFuncBinding.referencePaths;
+
     for (const reference of references) {
       const refParentPath = reference.parentPath;
       if (!refParentPath) continue;
+
+      if (!refParentPath.isCallExpression()) continue;
+      if (refParentPath.node.callee !== reference.node) continue;
+
       if (t.isReturnStatement(refParentPath.parent)) continue;
 
-      const code = generate(refParentPath.node).code;
-      const value = vm.runInContext(code, vmContext);
-      refParentPath.replaceWith(t.valueToNode(value));
+      const args = refParentPath.node.arguments;
+      if (args.length === 0) continue;
+      if (!args.every((arg) => DecryptStrings.isStaticValue(arg))) continue;
+
+      try {
+        const code = generate(refParentPath.node).code;
+        const value = vm.runInContext(code, vmContext);
+
+        if (typeof value === "undefined") continue;
+
+        refParentPath.replaceWith(t.valueToNode(value));
+      } catch {
+        console.warn(
+          `Skipping decrypt call: ${generate(refParentPath.node).code}`
+        );
+      }
     }
   }
 }
@@ -245,6 +292,7 @@ class MapReplacer {
   decryptionMap: {
     [key: string]: BinaryOperator | MapFuncType | string;
   };
+
   mapName: string | undefined;
   scope: Scope | undefined;
 
@@ -253,20 +301,23 @@ class MapReplacer {
   }
 
   public parseMap(path: NodePath<t.VariableDeclarator>): boolean | undefined {
-    let node = path.node;
+    const node = path.node;
     if (!t.isObjectExpression(node.init)) return;
     if (!t.isIdentifier(node.id)) return;
 
     let flag = false;
+
     node.init.properties = node.init.properties.filter((elemNode) => {
       if (!t.isObjectProperty(elemNode)) return true;
       if (!t.isIdentifier(elemNode.key)) return true;
+
       const key = elemNode.key.name;
 
       if (t.isFunctionExpression(elemNode.value)) {
-        let funcBody = elemNode.value.body.body;
+        const funcBody = elemNode.value.body.body;
         if (funcBody.length !== 1) return true;
         if (!t.isReturnStatement(funcBody[0])) return true;
+
         const ret = funcBody[0].argument;
 
         if (t.isBinaryExpression(ret)) {
@@ -287,13 +338,14 @@ class MapReplacer {
         );
         return true;
       }
+
       return false;
     });
 
     if (flag) {
       this.mapName = node.id.name;
       this.scope = path.scope;
-      return flag;
+      return true;
     }
   }
 
@@ -308,15 +360,17 @@ class MapReplacer {
           const { object, property } = node.callee;
           if (!t.isIdentifier(object, { name: this.mapName })) return;
           if (!t.isStringLiteral(property)) return;
+          if (node.arguments.length !== 2) return;
 
-          if (path.node.arguments.length !== 2) return;
           const op = this.decryptionMap[property.value];
           if (!isBinaryOperator(op)) return;
-          let unObfNode = t.binaryExpression(
+
+          const unObfNode = t.binaryExpression(
             op,
             node.arguments[0] as t.Expression,
             node.arguments[1] as t.Expression
           );
+
           path.replaceWith(unObfNode);
         },
       },
@@ -326,19 +380,23 @@ class MapReplacer {
 
   public replaceMapIndexing() {
     if (!this.mapName) return;
+
     this.scope?.crawl();
+
     const references = this.scope?.getBinding(this.mapName)?.referencePaths;
     if (!references) {
       console.error("Map was found but has not been used further in the code");
       return;
     }
+
     for (const reference of references) {
       const mapIndex = reference.parentPath;
       const mapIndexParent = mapIndex?.parentPath;
+
       if (!mapIndex || !t.isMemberExpression(mapIndex.node)) continue;
       if (!mapIndexParent) continue;
-      const mapIndexParentNode = mapIndexParent.node;
 
+      const mapIndexParentNode = mapIndexParent.node;
       const { object, computed, property } = mapIndex.node;
 
       if (
@@ -372,7 +430,8 @@ class MapReplacer {
 class SimplifyIndexing {
   static simplifyUnwrapOrElse(path: NodePath<t.CallExpression>) {
     const node = path.node;
-    if (!t.isCallExpression(path.node.callee)) return;
+
+    if (!t.isCallExpression(node.callee)) return;
     if (node.arguments.length !== 3) return;
 
     const args = node.arguments as t.Expression[];
@@ -400,25 +459,27 @@ class SimplifyIndexing {
       (t.isStringLiteral(property) && !property.value.includes("."))
     ) {
       return t.memberExpression(object, property, true);
-    } else {
-      const properties = property.value.split(".");
-      let resultObj: t.Expression | undefined;
-      for (const prop of properties) {
-        const propLit = t.stringLiteral(prop);
-        if (!resultObj) {
-          resultObj = t.memberExpression(object, propLit, true);
-        } else {
-          resultObj = t.memberExpression(resultObj, propLit, true);
-        }
-      }
-      return resultObj;
     }
+
+    const properties = property.value.split(".");
+    let resultObj: t.Expression | undefined;
+
+    for (const prop of properties) {
+      const propLit = t.stringLiteral(prop);
+
+      if (!resultObj) {
+        resultObj = t.memberExpression(object, propLit, true);
+      } else {
+        resultObj = t.memberExpression(resultObj, propLit, true);
+      }
+    }
+
+    return resultObj;
   }
 }
 
 function deobfuscate(source: string) {
   const ast = parser.parse(source);
-
   const decryptCtx = vm.createContext();
 
   let funcObfStrings: string | undefined;
@@ -428,11 +489,10 @@ function deobfuscate(source: string) {
 
   const findObfuscatedStrings = {
     FunctionDeclaration(path: NodePath<t.FunctionDeclaration>) {
-      let funcName = ObfuscatedStrings.findStringsArray(path, decryptCtx);
+      const funcName = ObfuscatedStrings.findStringsArray(path, decryptCtx);
       if (funcName) {
         funcObfStrings = funcName;
         path.stop();
-        return;
       }
     },
   };
@@ -465,8 +525,15 @@ function deobfuscate(source: string) {
           decryptCtx,
           baseDecryptFunc
         );
+
         if (binding) {
-          wrapperBindings.push(binding);
+          if (
+            !wrapperBindings.some(
+              (existing) => existing.identifier.name === binding.identifier.name
+            )
+          ) {
+            wrapperBindings.push(binding);
+          }
           return;
         }
       }
@@ -478,8 +545,16 @@ function deobfuscate(source: string) {
             decryptCtx,
             b.identifier.name
           );
+
           if (binding) {
-            wrapperBindings.push(binding);
+            if (
+              !wrapperBindings.some(
+                (existing) =>
+                  existing.identifier.name === binding.identifier.name
+              )
+            ) {
+              wrapperBindings.push(binding);
+            }
             return;
           }
         }
@@ -507,13 +582,30 @@ function deobfuscate(source: string) {
     console.error("Base decrypt function was not found!");
     return;
   }
-  if (wrapperBindings.length === 0) {
-    console.error("No decrypt wrappers were found!");
+
+  if (!foundShuffleFunc) {
+    console.warn("Shuffle function was not found");
   }
 
-  for (const b of wrapperBindings) {
-    DecryptStrings.decryptMapKeys(b, decryptCtx);
-  }
+  const processed = new Set<string>();
+
+  traverse(ast, {
+    Program(path) {
+      const baseBinding = path.scope.getBinding(baseDecryptFunc!);
+      if (baseBinding && !processed.has(baseDecryptFunc!)) {
+        DecryptStrings.decryptMapKeys(baseBinding, decryptCtx);
+        processed.add(baseDecryptFunc!);
+      }
+
+      for (const b of wrapperBindings) {
+        if (processed.has(b.identifier.name)) continue;
+        DecryptStrings.decryptMapKeys(b, decryptCtx);
+        processed.add(b.identifier.name);
+      }
+
+      path.stop();
+    },
+  });
 
   const mapReplacer = new MapReplacer();
 
@@ -545,7 +637,8 @@ function deobfuscate(source: string) {
 
   const bracketToDot = {
     MemberExpression(path: NodePath<t.MemberExpression>) {
-      let { object, property, computed } = path.node;
+      const { object, property, computed } = path.node;
+
       if (!computed) return;
       if (!t.isStringLiteral(property)) return;
       if (!validIdentifierRegex.test(property.value)) return;
@@ -561,6 +654,7 @@ function deobfuscate(source: string) {
   let deobfCode = generate(ast, {
     comments: false,
   }).code;
+
   deobfCode = beautify(deobfCode, {
     indent_size: 2,
     space_in_empty_paren: true,
@@ -570,12 +664,14 @@ function deobfuscate(source: string) {
 }
 
 function writeCodeToFile(code: string) {
-  let outputPath = process.argv[3];
+  const outputPath = process.argv[3];
+
   writeFile(outputPath, code, (err) => {
     if (err) {
       console.error("Error writing file", err);
       return;
     }
+
     console.log(`Wrote file to ${outputPath}`);
   });
 }
