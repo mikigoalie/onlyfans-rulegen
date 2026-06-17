@@ -114,6 +114,30 @@ class ObfuscatedStrings {
       },
     });
 
+    // Neutralize the decoder's memoization cache. It is keyed only by the
+    // string-array index (e.g. `i.VxFhKF[r]`, where `r` derives from the
+    // index), but the actual plaintext also depends on the per-call RC4 key
+    // (the second argument). At runtime each index is only ever decoded with
+    // its matching key, so caching by index is safe there; but we batch-decode
+    // every call site against one shared cache, so when the same index is
+    // reused with different keys the cache returns a stale (wrong) string.
+    // Forcing every decode to recompute makes decoding deterministic and
+    // correct. We only blank the cache *read*; the write stays valid.
+    const decoderName = node.id.name;
+    path.traverse({
+      MemberExpression(memberPath) {
+        const m = memberPath.node;
+        if (!m.computed) return;
+        if (!t.isMemberExpression(m.object)) return;
+        if (!t.isIdentifier(m.object.object, { name: decoderName })) return;
+
+        const parent = memberPath.parent;
+        if (t.isAssignmentExpression(parent) && parent.left === m) return;
+
+        memberPath.replaceWith(t.unaryExpression("void", t.numericLiteral(0)));
+      },
+    });
+
     vm.runInContext(generate(node).code, vmContext);
     path.remove();
     return node.id.name;
