@@ -3,9 +3,9 @@
     "configurations": [
         {
             "type": "node-terminal",
-            "name": "deobfuscate.js",
+            "name": "dynamic-rules",
             "request": "launch",
-            "command": "npm run deobfuscate ./samples/obfuscated/10.js ./samples/deobfuscated/10.js",
+            "command": "npm run dynamic-rules -- ./samples/obfuscated/202606171436-4263228784.js 33d57ade8c02dbc5a333db99ff9ae26a",
             "cwd": "${workspaceFolder}"
         }
     ]

@@ -116,20 +116,10 @@ jobs:
       if: steps.compare-script-ids.outputs.is_new_script == 'true'
       run: npm run build
 
-    - name: Deobfuscate
-      if: steps.compare-script-ids.outputs.is_new_script == 'true'
-      run: |
-        mkdir -p "$SCRIPTS_DIR/deobfuscated"
-        npm run deobfuscate -- $SCRIPTS_DIR/obfuscated/$NEW_SCRIPT_ID.js $SCRIPTS_DIR/deobfuscated/$NEW_SCRIPT_ID.js
-        if [ $? -ne 0 ]; then
-            echo "Failed to deobfuscate"
-            exit 1
-        fi
-
     - name: Generate dynamic rules
       if: steps.compare-script-ids.outputs.is_new_script == 'true'
       run: |
-        rules=$(npm run --silent dynamic-rules -- $SCRIPTS_DIR/deobfuscated/$NEW_SCRIPT_ID.js $APP_TOKEN)
+        rules=$(npm run --silent dynamic-rules -- $SCRIPTS_DIR/obfuscated/$NEW_SCRIPT_ID.js $APP_TOKEN)
         if [ $? -ne 0 ]; then
             echo "Failed to generate dynamic rules"
             exit 1
