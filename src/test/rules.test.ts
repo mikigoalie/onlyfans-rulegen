@@ -5,6 +5,7 @@ import { basename, join } from "path";
 import { getRules } from "../rules";
 import { verifyRules } from "../verify";
 import { DynamicRules, validateRulesShape } from "../shape";
+import { lodashGet } from "../sandbox";
 
 const ROOT = join(__dirname, "..", "..");
 const SAMPLES_DIR = join(ROOT, "samples", "obfuscated");
@@ -73,11 +74,64 @@ test("a non-linear checksum is rejected", () => {
   );
 });
 
-test("a sample whose sign export is renamed is rejected", () => {
+test("a sample whose sign export is renamed still extracts the same rules", () => {
   const src = load(latest);
   assert.ok(src.includes("n.A=W=>"), "could not find the sign export");
-  const mutated = src.replace("n.A=W=>", "n.Z=W=>");
-  assert.throws(() => getRules(mutated, APP_TOKEN, basename(latest, ".js")));
+  const renamed = getRules(src.replace("n.A=W=>", "n.Zq=W=>"), APP_TOKEN, basename(latest, ".js"));
+  const { rulegen_version, ...expected } = rulesFor(latest);
+  const { rulegen_version: _, ...actual } = renamed;
+  assert.deepEqual(actual, expected);
+});
+
+test("a sample exported through webpack's .d helper still extracts", () => {
+  const src = load(latest);
+  const exporting = src.replace(/,n\.A=(W=>)/, ",t.d(n,{B:()=>__sign});var __sign=$1");
+  assert.notEqual(exporting, src, "could not rewrite the export");
+  assert.equal(getRules(exporting, APP_TOKEN, "x").static_param, rulesFor(latest).static_param);
+});
+
+test("a sample with no sign function is rejected", () => {
+  const src = load(latest);
+  const mutated = src.replace("n.A=W=>", "n.A=()=>({time:1}),W=>");
+  assert.notEqual(mutated, src);
+  assert.throws(
+    () => getRules(mutated, APP_TOKEN, basename(latest, ".js")),
+    /No sign function found/
+  );
+});
+
+test("two sign functions that disagree are rejected", () => {
+  const src = load(latest);
+  // Append a second chunk whose sign function has a different prefix.
+  const other =
+    ";self.webpackChunkof_vue.push([[1],{1:function(m,e){e.A=()=>({time:1," +
+    'sign:"1:' + "a".repeat(40) + ':1:abcdef01"})}}]);';
+  assert.throws(
+    () => getRules(src + other, APP_TOKEN, basename(latest, ".js")),
+    /sign functions that disagree/
+  );
+});
+
+test("a script that never finishes loading times out", () => {
+  assert.throws(() => getRules("for(;;){}", APP_TOKEN, "x"), /timed out/);
+});
+
+test("a sign function that never returns times out", () => {
+  const src =
+    'self.webpackChunkof_vue.push([[1],{1:function(m,e){e.A=W=>{if(W.url!=="/api2/v2/init")for(;;){}' +
+    'return{time:1,sign:"1:' + "a".repeat(40) + ':1:abcdef01"}}}}]);';
+  assert.throws(() => getRules(src, APP_TOKEN, "x"), /timed out/);
+});
+
+test("lodashGet handles dot, bracket and array paths", () => {
+  const obj = { a: { b: [{ c: 1 }] }, "x.y": 2, getters: { "auth/authUserId": 3 } };
+  assert.equal(lodashGet(obj, "a.b[0].c"), 1);
+  assert.equal(lodashGet(obj, ["a", "b", 0, "c"]), 1);
+  assert.equal(lodashGet(obj, "x.y"), 2);
+  assert.equal(lodashGet(obj, "getters.auth/authUserId"), 3);
+  assert.equal(lodashGet(obj, ["getters", "auth/authUserId"]), 3);
+  assert.equal(lodashGet(obj, "a.nope.c", "def"), "def");
+  assert.equal(lodashGet(null, "a", "def"), "def");
 });
 
 test("rules with one index altered fail verification", () => {

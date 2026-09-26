@@ -1,6 +1,6 @@
 import { createHash, randomInt } from "crypto";
 import { checksumHex, DynamicRules, validateRulesShape } from "./shape";
-import { findSigner, loadScript } from "./rules";
+import { findSigner, loadScript } from "./sandbox";
 
 /**
  * Checks extracted rules against the real sign module.
