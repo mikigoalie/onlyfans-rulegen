@@ -5,7 +5,7 @@
             "type": "node-terminal",
             "name": "dynamic-rules",
             "request": "launch",
-            "command": "npm run dynamic-rules -- ./samples/obfuscated/202606171436-4263228784.js 33d57ade8c02dbc5a333db99ff9ae26a",
+            "command": "npm run dynamic-rules -- ./samples/obfuscated/202609251341-9985c38bbd.js 33d57ade8c02dbc5a333db99ff9ae26a",
             "cwd": "${workspaceFolder}"
         }
     ]
