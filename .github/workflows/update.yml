@@ -35,11 +35,11 @@ jobs:
         node-version: "26"
         cache: "npm"
 
-    - name: Build
+    - name: Build and test against every committed sample
       run: |
         set -euo pipefail
         npm ci
-        npm run build
+        npm test
 
     - name: Cache curl-impersonate
       id: cache-curl-impersonate
@@ -103,15 +103,16 @@ jobs:
     - name: Validate rules without running the OnlyFans code
       run: |
         set -euo pipefail
-        node build/validate.js out/dynamic-rules.json
+        node build/validate.js out/dynamic-rules.json "out/samples/obfuscated/$REVISION.js"
 
     - name: Commit and push changes
       run: |
         set -euo pipefail
         cp out/dynamic-rules.json ./dynamic-rules.json
-        git add ./dynamic-rules.json
+        cp "out/samples/obfuscated/$REVISION.js" samples/obfuscated/
+        git add ./dynamic-rules.json "samples/obfuscated/$REVISION.js"
         if git diff --cached --quiet; then
-          echo "dynamic-rules.json is unchanged; nothing to commit."
+          echo "Nothing changed; nothing to commit."
           exit 0
         fi
         git config --local user.name "GitHub Actions"
