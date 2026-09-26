@@ -44,5 +44,7 @@
     37,
     39
   ],
-  "checksum_constant": -704
+  "checksum_constant": -704,
+  "verified_samples": 500,
+  "rulegen_version": "2.1.0"
 }
