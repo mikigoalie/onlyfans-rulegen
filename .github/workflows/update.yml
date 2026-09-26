@@ -12,6 +12,11 @@ on:
 
 permissions: {}
 
+env:
+  CURL_IMPERSONATE_VERSION: v2.2.3
+  CURL_IMPERSONATE_SHA256: ca7c8aae49e33260d3a2400db16c7737aaf04692d606a843502056b42990f989
+  CURL_BIN: ./curl-impersonate/curl_chrome150
+
 jobs:
   extract:
     runs-on: ubuntu-latest
@@ -21,13 +26,13 @@ jobs:
       changed: ${{ steps.fetch.outputs.changed }}
       revision: ${{ steps.fetch.outputs.revision }}
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         persist-credentials: false
 
-    - uses: actions/setup-node@v3
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
-        node-version: "23"
+        node-version: "26"
         cache: "npm"
 
     - name: Build
@@ -38,18 +43,20 @@ jobs:
 
     - name: Cache curl-impersonate
       id: cache-curl-impersonate
-      uses: actions/cache@v4
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ./curl-impersonate
-        key: ${{ runner.os }}-curl-impersonate
+        key: ${{ runner.os }}-curl-impersonate-${{ env.CURL_IMPERSONATE_VERSION }}
 
     - name: Download curl-impersonate
       if: steps.cache-curl-impersonate.outputs.cache-hit != 'true'
       run: |
         set -euo pipefail
         mkdir -p curl-impersonate
-        wget https://github.com/lwthiker/curl-impersonate/releases/download/v0.6.1/curl-impersonate-v0.6.1.x86_64-linux-gnu.tar.gz
-        tar -xf curl-impersonate-v0.6.1.x86_64-linux-gnu.tar.gz -C ./curl-impersonate
+        curl -fsSL -o curl-impersonate.tar.gz \
+          "https://github.com/lexiforest/curl-impersonate/releases/download/${CURL_IMPERSONATE_VERSION}/curl-impersonate-${CURL_IMPERSONATE_VERSION}.x86_64-linux-gnu.tar.gz"
+        echo "${CURL_IMPERSONATE_SHA256}  curl-impersonate.tar.gz" | sha256sum -c -
+        tar -xzf curl-impersonate.tar.gz -C ./curl-impersonate
 
     - name: Fetch, extract and verify
       id: fetch
@@ -57,9 +64,9 @@ jobs:
         FORCE: ${{ inputs.force && '--force' || '' }}
       run: |
         set -euo pipefail
-        node build/fetch.js --curl ./curl-impersonate/curl_chrome116 --out out $FORCE
+        node build/fetch.js --curl "$CURL_BIN" --out out $FORCE
 
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       if: steps.fetch.outputs.changed == 'true'
       with:
         name: rules
@@ -75,11 +82,11 @@ jobs:
     env:
       REVISION: ${{ needs.extract.outputs.revision }}
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-    - uses: actions/setup-node@v3
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
-        node-version: "23"
+        node-version: "26"
         cache: "npm"
 
     - name: Build
@@ -88,7 +95,7 @@ jobs:
         npm ci
         npm run build
 
-    - uses: actions/download-artifact@v4
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
       with:
         name: rules
         path: out
