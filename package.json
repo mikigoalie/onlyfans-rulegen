@@ -8,7 +8,8 @@
     "build-dev": "npx tsc -w",
     "fetch": "node ./build/fetch.js",
     "dynamic-rules": "node ./build/dynamic_rules.js",
-    "test": "npm run build && node --test \"build/test/*.test.js\""
+    "test": "npm run build && node --test \"build/test/*.test.js\"",
+    "validate": "node ./build/validate.js"
   },
   "author": "",
   "license": "ISC",
