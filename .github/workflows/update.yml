@@ -8,7 +8,6 @@ on:
 permissions: {}
 
 env:
-  OLD_SCRIPT_ID: ${{ vars.OLD_SCRIPT_ID }}
   SCRIPTS_DIR: "./scripts"
 
 jobs:
@@ -76,9 +75,10 @@ jobs:
         fi
         echo "APP_TOKEN=$APP_TOKEN" >> $GITHUB_ENV
 
-    - name: Compare old and new script
+    - name: Compare with the committed revision
       id: compare-script-ids
       run: |
+        OLD_SCRIPT_ID=$(jq -r .revision dynamic-rules.json)
         if [ "$NEW_SCRIPT_ID" == "$OLD_SCRIPT_ID" ]; then
           echo "is_new_script=false" >> "$GITHUB_OUTPUT"
         else
@@ -140,13 +140,12 @@ jobs:
     - name: Commit and push changes
       run: |
         cp out/dynamic-rules.json ./dynamic-rules.json
+        git add ./dynamic-rules.json
+        if git diff --cached --quiet; then
+          echo "dynamic-rules.json is unchanged; nothing to commit."
+          exit 0
+        fi
         git config --local user.name "GitHub Actions"
         git config --local user.email "actions@github.com"
-        git add ./dynamic-rules.json
         git commit -m "dynamic-rules.json: $NEW_SCRIPT_ID"
         git push
-
-    - name: Update last script id
-      run: gh variable set OLD_SCRIPT_ID --body "$NEW_SCRIPT_ID"
-      env:
-        GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
