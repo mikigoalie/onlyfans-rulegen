@@ -4,11 +4,13 @@ on:
   schedule:
     - cron: "17 */6 * * *"
   workflow_dispatch:
+    inputs:
+      force:
+        description: Re-extract even if the revision is unchanged
+        type: boolean
+        default: false
 
 permissions: {}
-
-env:
-  SCRIPTS_DIR: "./scripts"
 
 jobs:
   extract:
@@ -16,12 +18,23 @@ jobs:
     permissions:
       contents: read
     outputs:
-      is_new_script: ${{ steps.compare-script-ids.outputs.is_new_script }}
-      new_script_id: ${{ steps.compare-script-ids.outputs.new_script_id }}
+      changed: ${{ steps.fetch.outputs.changed }}
+      revision: ${{ steps.fetch.outputs.revision }}
     steps:
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
+
+    - uses: actions/setup-node@v3
+      with:
+        node-version: "23"
+        cache: "npm"
+
+    - name: Build
+      run: |
+        set -euo pipefail
+        npm ci
+        npm run build
 
     - name: Cache curl-impersonate
       id: cache-curl-impersonate
@@ -33,78 +46,21 @@ jobs:
     - name: Download curl-impersonate
       if: steps.cache-curl-impersonate.outputs.cache-hit != 'true'
       run: |
+        set -euo pipefail
         mkdir -p curl-impersonate
         wget https://github.com/lwthiker/curl-impersonate/releases/download/v0.6.1/curl-impersonate-v0.6.1.x86_64-linux-gnu.tar.gz
         tar -xf curl-impersonate-v0.6.1.x86_64-linux-gnu.tar.gz -C ./curl-impersonate
 
-    - name: Download obfuscated script
+    - name: Fetch, extract and verify
+      id: fetch
+      env:
+        FORCE: ${{ inputs.force && '--force' || '' }}
       run: |
-        WEBPAGE_URL="https://onlyfans.com"
-        OUTPUT_DIR="$SCRIPTS_DIR/obfuscated"
-        mkdir -p "$OUTPUT_DIR"
-        WEBPAGE_SOURCE=$(./curl-impersonate/curl_chrome116 --silent --show-error "$WEBPAGE_URL")
-        JS_URL=$(echo "$WEBPAGE_SOURCE" | grep -oP 'https:\/\/static2\.onlyfans\.com\/static\/prod\/[a-f0-9]\/202[567]\d{8}-[a-f0-9]{10}\/[a-f0-9]{4}\.js')
-        if [ -z "$JS_URL" ]; then
-            echo "$WEBPAGE_SOURCE"
-            echo "No matching JavaScript file found in the webpage source."
-            exit 1
-        fi
-        TIMESTAMP=$(echo "$JS_URL" | grep -oP '202[567]\d{8}-[a-f0-9]{10}')
-        if [ -z "$TIMESTAMP" ]; then
-            echo "Failed to extract timestamp from the JavaScript URL."
-            exit 1
-        fi
-        OUTPUT_FILE="$OUTPUT_DIR/$TIMESTAMP.js"
-        ./curl-impersonate/curl-impersonate-chrome --silent --show-error -H "User-Agent: Mozilla/5.0" -o "$OUTPUT_FILE" "$JS_URL"
-        if [ $? -ne 0 ]; then
-            echo "Failed to download JavaScript file from $JS_URL."
-            exit 1
-        fi
-        script_id=$(basename $OUTPUT_FILE | tr -d ".js")
-        echo "NEW_SCRIPT_ID=$script_id" >> $GITHUB_ENV
-        APP_JS_URL="${JS_URL%/*}/app.js"
-        APP_JS=$(./curl-impersonate/curl_chrome116 --show-error "$APP_JS_URL" 2>&1)
-        if [ -z "$APP_JS" ]; then
-            echo "Failed to download app.js from $APP_JS_URL."
-            exit 1
-        fi
-        APP_TOKEN=$(echo "$APP_JS" | grep -oP ',\s*[A-Za-z_$]{1,3}\s*=\s*"\K[a-f0-9]{32}(?=")' | head -1)
-        if [ -z "$APP_TOKEN" ]; then
-            echo "Failed to extract app token from app.js"
-            exit 1
-        fi
-        echo "APP_TOKEN=$APP_TOKEN" >> $GITHUB_ENV
-
-    - name: Compare with the committed revision
-      id: compare-script-ids
-      run: |
-        OLD_SCRIPT_ID=$(jq -r .revision dynamic-rules.json)
-        if [ "$NEW_SCRIPT_ID" == "$OLD_SCRIPT_ID" ]; then
-          echo "is_new_script=false" >> "$GITHUB_OUTPUT"
-        else
-          echo "is_new_script=true" >> "$GITHUB_OUTPUT"
-          echo "new_script_id=$NEW_SCRIPT_ID" >> "$GITHUB_OUTPUT"
-        fi
-
-    - uses: actions/setup-node@v3
-      if: steps.compare-script-ids.outputs.is_new_script == 'true'
-      with:
-        node-version: "23"
-        cache: "npm"
-
-    - name: Build
-      if: steps.compare-script-ids.outputs.is_new_script == 'true'
-      run: npm ci && npm run build
-
-    - name: Extract and verify dynamic rules
-      if: steps.compare-script-ids.outputs.is_new_script == 'true'
-      run: |
-        mkdir -p out
-        npm run --silent dynamic-rules -- "$SCRIPTS_DIR/obfuscated/$NEW_SCRIPT_ID.js" "$APP_TOKEN" > out/dynamic-rules.json
-        cp "$SCRIPTS_DIR/obfuscated/$NEW_SCRIPT_ID.js" out/
+        set -euo pipefail
+        node build/fetch.js --curl ./curl-impersonate/curl_chrome116 --out out $FORCE
 
     - uses: actions/upload-artifact@v4
-      if: steps.compare-script-ids.outputs.is_new_script == 'true'
+      if: steps.fetch.outputs.changed == 'true'
       with:
         name: rules
         path: out/
@@ -112,12 +68,12 @@ jobs:
 
   publish:
     needs: extract
-    if: needs.extract.outputs.is_new_script == 'true'
+    if: needs.extract.outputs.changed == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
-      NEW_SCRIPT_ID: ${{ needs.extract.outputs.new_script_id }}
+      REVISION: ${{ needs.extract.outputs.revision }}
     steps:
     - uses: actions/checkout@v4
 
@@ -127,7 +83,10 @@ jobs:
         cache: "npm"
 
     - name: Build
-      run: npm ci && npm run build
+      run: |
+        set -euo pipefail
+        npm ci
+        npm run build
 
     - uses: actions/download-artifact@v4
       with:
@@ -135,10 +94,13 @@ jobs:
         path: out
 
     - name: Validate rules without running the OnlyFans code
-      run: npm run --silent validate -- out/dynamic-rules.json
+      run: |
+        set -euo pipefail
+        node build/validate.js out/dynamic-rules.json
 
     - name: Commit and push changes
       run: |
+        set -euo pipefail
         cp out/dynamic-rules.json ./dynamic-rules.json
         git add ./dynamic-rules.json
         if git diff --cached --quiet; then
@@ -147,5 +109,5 @@ jobs:
         fi
         git config --local user.name "GitHub Actions"
         git config --local user.email "actions@github.com"
-        git commit -m "dynamic-rules.json: $NEW_SCRIPT_ID"
+        git commit -m "dynamic-rules.json: $REVISION"
         git push
