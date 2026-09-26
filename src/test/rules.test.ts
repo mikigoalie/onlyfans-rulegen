@@ -52,7 +52,8 @@ test("a sample whose sign export is renamed still extracts the same rules", () =
 
 test("a sample exported through webpack's .d helper still extracts", () => {
   const src = load(latest);
-  const out = src.replace(/,n\.A=(W=>)/, ",t.d(n,{B:()=>__sign});var __sign=$1");
+  const req = src.match(/:function\(\w+,\w+,(\w+)\)\{/)?.[1];
+  const out = src.replace(/,n\.A=(W=>)/, `,${req}.d(n,{B:()=>__sign});var __sign=$1`);
   assert.notEqual(out, src, "could not rewrite the export");
   assert.equal(getRules(out, TOKEN, "x").static_param, rulesFor(latest).static_param);
 });

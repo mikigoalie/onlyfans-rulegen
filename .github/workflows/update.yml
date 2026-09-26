@@ -2,144 +2,158 @@ name: Generate dynamic rules
 
 on:
   schedule:
-    - cron: "17 */6 * * *"
+    - cron: "17 * * * *"
   workflow_dispatch:
-permissions:
-  contents: write
-  actions: write
+    inputs:
+      force:
+        description: Re-extract even if the revision is unchanged
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: rulegen-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
-  OLD_SCRIPT_ID: ${{ vars.OLD_SCRIPT_ID }}
-  SCRIPTS_DIR: "./scripts"
+  CURL_IMPERSONATE_VERSION: v2.2.3
+  CURL_IMPERSONATE_SHA256: ca7c8aae49e33260d3a2400db16c7737aaf04692d606a843502056b42990f989
+  CURL_BIN: ./curl-impersonate/curl_chrome150
 
 jobs:
-  process-script:
+  extract:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
-      is_new_script: ${{ steps.compare-script-ids.outputs.is_new_script }}
-      new_script_id: ${{ steps.compare-script-ids.outputs.new_script_id }}
-
+      changed: ${{ steps.fetch.outputs.changed }}
+      revision: ${{ steps.fetch.outputs.revision }}
+      error: ${{ steps.fetch.outputs.error }}
     steps:
-    - name: Check out repository
-      uses: actions/checkout@v4
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: "26"
+        cache: "npm"
+
+    - name: Build and test against every committed sample
+      run: |
+        set -euo pipefail
+        npm ci
+        npm test
 
     - name: Cache curl-impersonate
       id: cache-curl-impersonate
-      uses: actions/cache@v4
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ./curl-impersonate
-        key: ${{ runner.os }}-curl-impersonate
-    
-    # cloudflare restricts access via tls fingerprinting when doing requests with old openssl version
+        key: ${{ runner.os }}-curl-impersonate-${{ env.CURL_IMPERSONATE_VERSION }}
+
     - name: Download curl-impersonate
       if: steps.cache-curl-impersonate.outputs.cache-hit != 'true'
       run: |
+        set -euo pipefail
         mkdir -p curl-impersonate
-        wget https://github.com/lwthiker/curl-impersonate/releases/download/v0.6.1/curl-impersonate-v0.6.1.x86_64-linux-gnu.tar.gz
-        tar -xf curl-impersonate-v0.6.1.x86_64-linux-gnu.tar.gz -C ./curl-impersonate
+        curl -fsSL -o curl-impersonate.tar.gz \
+          "https://github.com/lexiforest/curl-impersonate/releases/download/${CURL_IMPERSONATE_VERSION}/curl-impersonate-${CURL_IMPERSONATE_VERSION}.x86_64-linux-gnu.tar.gz"
+        echo "${CURL_IMPERSONATE_SHA256}  curl-impersonate.tar.gz" | sha256sum -c -
+        tar -xzf curl-impersonate.tar.gz -C ./curl-impersonate
 
-    - name: Run bash script to download obfuscated script
+    - name: Fetch, extract and verify
+      id: fetch
+      env:
+        FORCE: ${{ inputs.force && '--force' || '' }}
       run: |
-        WEBPAGE_URL="https://onlyfans.com"
-        OUTPUT_DIR="$SCRIPTS_DIR/obfuscated"
-        mkdir -p "$OUTPUT_DIR"
+        set -euo pipefail
+        node build/fetch.js --curl "$CURL_BIN" --out out $FORCE
 
-        WEBPAGE_SOURCE=$(./curl-impersonate/curl_chrome116 --silent --show-error "$WEBPAGE_URL")
-
-        JS_URL=$(echo "$WEBPAGE_SOURCE" | grep -oP 'https:\/\/static2\.onlyfans\.com\/static\/prod\/[a-f0-9]\/202[567]\d{8}-[a-f0-9]{10}\/[a-f0-9]{4}\.js')
-        if [ -z "$JS_URL" ]; then
-            echo "$WEBPAGE_SOURCE"
-            echo "No matching JavaScript file found in the webpage source."
-            exit 1
-        fi
-
-        TIMESTAMP=$(echo "$JS_URL" | grep -oP '202[567]\d{8}-[a-f0-9]{10}')
-        if [ -z "$TIMESTAMP" ]; then
-            echo "Failed to extract timestamp from the JavaScript URL."
-            exit 1
-        fi
-
-        OUTPUT_FILE="$OUTPUT_DIR/$TIMESTAMP.js"
-
-        ./curl-impersonate/curl-impersonate-chrome --silent --show-error -H "User-Agent: Mozilla/5.0" -o "$OUTPUT_FILE" "$JS_URL"
-        if [ $? -ne 0 ]; then
-            echo "Failed to download JavaScript file from $JS_URL."
-            exit 1
-        fi
-
-        script_path="$OUTPUT_FILE"
-        script_id=$(basename $script_path | tr -d ".js")
-        echo "NEW_SCRIPT_ID=$script_id" >> $GITHUB_ENV
-
-        APP_JS_URL="${JS_URL%/*}/app.js"
-        APP_JS=$(./curl-impersonate/curl_chrome116 --show-error "$APP_JS_URL" 2>&1)
-        if [ -z "$APP_JS" ]; then
-            echo "Failed to download app.js from $APP_JS_URL."
-            exit 1
-        fi
-        # Matches minified assignments like: ,He="33d57ade8c02dbc5a333db99ff9ae26a"
-        APP_TOKEN=$(echo "$APP_JS" | grep -oP ',\s*[A-Za-z_$]{1,3}\s*=\s*"\K[a-f0-9]{32}(?=")' | head -1)
-        if [ -z "$APP_TOKEN" ]; then
-            echo "Failed to extract app token from app.js"
-            exit 1
-        fi
-        echo "APP_TOKEN=$APP_TOKEN" >> $GITHUB_ENV
-
-    - name: Compare old and new script
-      id: compare-script-ids
-      run: |
-        if [ "$NEW_SCRIPT_ID" == "$OLD_SCRIPT_ID" ]; then
-          echo "is_new_script=false" >> "$GITHUB_OUTPUT"
-        else
-          echo "is_new_script=true" >> "$GITHUB_OUTPUT"
-          echo "new_script_id=$NEW_SCRIPT_ID" >> "$GITHUB_OUTPUT"
-        fi
-
-    - name: Upload obfuscated script
-      if: steps.compare-script-ids.outputs.is_new_script == 'true'
-      uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      if: steps.fetch.outputs.changed == 'true'
       with:
-        name: ${{ steps.compare-script-ids.outputs.new_script_id }}
-        path: ${{ env.SCRIPTS_DIR }}/obfuscated/${{ steps.compare-script-ids.outputs.new_script_id }}.js
+        name: rules
+        path: out/
+        if-no-files-found: error
 
-    - name: Set up Node.js
-      if: steps.compare-script-ids.outputs.is_new_script == 'true'
-      uses: actions/setup-node@v3
+  publish:
+    needs: extract
+    if: needs.extract.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      error: ${{ steps.validate.outputs.error }}
+    env:
+      REVISION: ${{ needs.extract.outputs.revision }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
-        node-version: "23"
+        node-version: "26"
         cache: "npm"
 
-    - name: Install dependencies
-      if: steps.compare-script-ids.outputs.is_new_script == 'true'
-      run: npm ci
-
     - name: Build
-      if: steps.compare-script-ids.outputs.is_new_script == 'true'
-      run: npm run build
-
-    - name: Generate dynamic rules
-      if: steps.compare-script-ids.outputs.is_new_script == 'true'
       run: |
-        rules=$(npm run --silent dynamic-rules -- $SCRIPTS_DIR/obfuscated/$NEW_SCRIPT_ID.js $APP_TOKEN)
-        if [ $? -ne 0 ]; then
-            echo "Failed to generate dynamic rules"
-            exit 1
-        fi
-        echo "$rules" > ./dynamic-rules.json
+        set -euo pipefail
+        npm ci
+        npm run build
+
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: rules
+        path: out
+
+    - name: Validate rules without running the OnlyFans code
+      id: validate
+      run: |
+        set -euo pipefail
+        node build/validate.js out/dynamic-rules.json "out/samples/obfuscated/$REVISION.js"
 
     - name: Commit and push changes
-      if: steps.compare-script-ids.outputs.is_new_script == 'true'
       run: |
+        set -euo pipefail
+        cp out/dynamic-rules.json ./dynamic-rules.json
+        cp "out/samples/obfuscated/$REVISION.js" samples/obfuscated/
+        git add ./dynamic-rules.json "samples/obfuscated/$REVISION.js"
+        if git diff --cached --quiet; then
+          echo "Nothing changed; nothing to commit."
+          exit 0
+        fi
         git config --local user.name "GitHub Actions"
         git config --local user.email "actions@github.com"
-        git add ./dynamic-rules.json
-        git commit -m "dynamic-rules.json: $NEW_SCRIPT_ID"
+        git commit -m "dynamic-rules.json: $REVISION"
         git push
 
-    - name: Update last script id
-      if: steps.compare-script-ids.outputs.is_new_script == 'true'
-      run: |
-        gh variable list
-        gh variable set OLD_SCRIPT_ID --body "$NEW_SCRIPT_ID"
-        gh variable list
+  report:
+    needs: [extract, publish]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+    - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       env:
-        GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+        EXTRACT_RESULT: ${{ needs.extract.result }}
+        PUBLISH_RESULT: ${{ needs.publish.result }}
+        ERROR: ${{ needs.extract.outputs.error || needs.publish.outputs.error }}
+      with:
+        script: |
+          const label = "rulegen-failure";
+          const { EXTRACT_RESULT: extract, PUBLISH_RESULT: publish, ERROR: error } = process.env;
+          const results = [extract, publish];
+          if (results.includes("cancelled")) return;
+          const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+          const open = (await github.paginate(github.rest.issues.listForRepo, { ...context.repo, labels: label, state: "open" })).filter((i) => !i.pull_request);
+          if (results.includes("failure")) {
+            const body = `[Run ${context.runId}](${run}) on \`${context.ref}\` failed (extract: ${extract}, publish: ${publish}). dynamic-rules.json was not changed.\n\n\`\`\`\n${error || "No error message was captured; see the run log."}\n\`\`\``;
+            if (open.length) await github.rest.issues.createComment({ ...context.repo, issue_number: open[0].number, body });
+            else await github.rest.issues.create({ ...context.repo, title: "Dynamic rules generation is failing", labels: [label], body });
+          } else
+            for (const issue of open) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: issue.number, body: `Resolved: [run ${context.runId}](${run}) succeeded.` });
+              await github.rest.issues.update({ ...context.repo, issue_number: issue.number, state: "closed" });
+            }
