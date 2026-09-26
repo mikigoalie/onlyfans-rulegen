@@ -1,249 +1,91 @@
-import vm from "vm";
+import { readFileSync } from "fs";
+import { join } from "path";
+import { DynamicRules, HASH_LEN, validateRulesShape } from "./shape";
+import { findSigner, loadScript, Signer } from "./sandbox";
+import { verifyRules } from "./verify";
 
-/**
- * Extracts OnlyFans dynamic signing rules by *executing* the obfuscated
- * signing module in a sandbox and reading the rules straight out of the real
- * `sign` function — instead of statically deobfuscating it.
- *
- * The webpack chunk exports a function `n.A(payload)` that returns an object
- * whose `sign` field is `"<prefix>:<sha1>:<checksum hex>:<suffix>"`, where the
- * checksum is `Math.abs(sum(hash[i].charCodeAt(0) for each index i) + C)`.
- *
- * We stub the module's dependencies (the SHA-1 hasher and lodash `get`) so we
- * fully control the hash string, then probe the checksum function one hash
- * position at a time to recover the index multiset and the constant `C`. The
- * static param is captured from the hasher input, and prefix/suffix straight
- * from the produced sign string.
- *
- * Running the browser-correct code as-is means the result is correct by
- * construction — no obfuscation handling required, and it self-heals when
- * OnlyFans rotates their obfuscation.
- */
+export { DynamicRules } from "./shape";
 
-// OnlyFans signs over a SHA-1 hex digest, so the hash the checksum indexes
-// into is always 40 characters long.
-const HASH_LEN = 40;
+const fail = (msg: string): never => {
+  throw new Error(msg);
+};
 
-export interface DynamicRules {
-  end: string;
-  start: string;
-  format: string;
-  prefix: string;
-  suffix: string;
-  revision: string;
-  app_token: string;
-  static_param: string;
-  remove_headers: string[];
-  checksum_indexes: number[];
-  checksum_constant: number;
+function parseSign(sign: string, hash: string) {
+  const at = sign.indexOf(`:${hash}:`);
+  const [checksum, suffix, ...rest] = sign.slice(at + hash.length + 2).split(":");
+  if (at < 0 || rest.length || suffix === undefined)
+    fail(`Sign string does not carry the hash the module was given; the checksum may be computed over something other than the SHA-1: ${sign}`);
+  if (!/^[0-9a-f]+$/.test(checksum)) fail(`Checksum ${JSON.stringify(checksum)} is not hex`);
+  return { prefix: sign.slice(0, at), checksum, suffix };
 }
 
-type SignModule = (module: any, exports: any, require: any) => void;
-
-interface LoadedScript {
-  modules: SignModule[];
-  sandbox: any;
-}
-
-/**
- * Runs the whole script in a vm context and captures every webpack module it
- * pushes, plus the sandbox (for reading `SENTRY_RELEASE`).
- */
-function loadScript(source: string): LoadedScript {
-  const sandbox: any = {
-    window: { navigator: { userAgent: "onlyfans-rulegen" } },
-  };
-  sandbox.self = sandbox;
-  sandbox.global = sandbox;
-  sandbox.globalThis = sandbox;
-
-  const modules: SignModule[] = [];
-  sandbox.self.webpackChunkof_vue = {
-    push: (chunk: any) => {
-      const map = (chunk && chunk[1]) || {};
-      for (const id of Object.keys(map)) {
-        if (typeof map[id] === "function") modules.push(map[id]);
-      }
-    },
-  };
-
-  vm.createContext(sandbox);
-  vm.runInContext(source, sandbox, { filename: "of-sign.js" });
-
-  if (modules.length === 0) {
-    throw new Error("No webpack modules were found in the script");
-  }
-  return { modules, sandbox };
-}
-
-interface SignResult {
-  sign: string;
-  staticParam: string | undefined;
-}
-
-/**
- * Instantiates one module with stubbed dependencies and calls its exported
- * sign function, forcing the hash to `hashValue` so the checksum is computed
- * over a string we control.
- */
-function runSign(moduleFn: SignModule, hashValue: string): SignResult {
-  let staticParam: string | undefined;
-
-  // A single stub that serves as both the SHA-1 hasher and lodash `get`,
-  // distinguished by call shape:
-  //   - hash(message)            -> exactly one string arg
-  //   - get(object, path, def)   -> object first arg
-  const stub = (...args: any[]): any => {
-    if (args.length === 1 && typeof args[0] === "string") {
-      const input = args[0];
-      const nl = input.indexOf("\n");
-      staticParam = nl >= 0 ? input.slice(0, nl) : input;
-      return hashValue;
-    }
-    const [obj, path, def] = args;
-    if (obj == null) return def;
-    let cur: any = obj;
-    for (const key of String(path).split(".")) {
-      if (cur == null) return def;
-      cur = cur[key];
-    }
-    return cur === undefined ? def : cur;
-  };
-
-  const req: any = () => ({ A: {} });
-  req.n = () => () => stub;
-
-  const mod: any = { exports: {} };
-  moduleFn(mod, mod.exports, req);
-
-  const exported = mod.exports;
-  if (!exported || typeof exported.A !== "function") {
-    throw new Error("Module does not export a sign function");
-  }
-
-  const result = exported.A({ url: "/api/probe" });
-  const sign = findSign(result);
-  if (!sign) throw new Error("Sign function did not produce a sign string");
-
-  return { sign, staticParam };
-}
-
-/** Pulls the `prefix:hash:checksum:suffix` string out of the returned object. */
-function findSign(result: any): string | undefined {
-  if (!result || typeof result !== "object") return undefined;
-  if (typeof result.sign === "string" && result.sign.split(":").length === 4) {
-    return result.sign;
-  }
-  return Object.values(result).find(
-    (v): v is string => typeof v === "string" && v.split(":").length === 4
-  );
-}
-
-function checksumInt(moduleFn: SignModule, hashValue: string): number {
-  const { sign } = runSign(moduleFn, hashValue);
-  // sign = "<prefix>:<hash>:<checksum hex>:<suffix>"
-  return parseInt(sign.split(":")[2], 16);
-}
-
-/**
- * Recovers the checksum index multiset and the additive constant by probing.
- *
- * The checksum is `abs(sum_j c_j * hash[j].charCodeAt(0) + C)`, where `c_j` is
- * how many times hash position `j` is referenced. We pick a base char code high
- * enough that the inner sum is always positive (so `abs` is the identity), then
- * bump one position's char code by 1 at a time: the delta equals `c_j`.
- */
-function probeChecksum(moduleFn: SignModule): {
-  indexes: number[];
-  constant: number;
-} {
-  const baseCode = 500; // 500 * 40 dwarfs any plausible constant -> sum stays > 0
-  const baseChar = String.fromCharCode(baseCode);
-  const probeChar = String.fromCharCode(baseCode + 1);
-
-  const base = baseChar.repeat(HASH_LEN);
-  const cBase = checksumInt(moduleFn, base);
-
-  const counts: number[] = [];
-  for (let j = 0; j < HASH_LEN; j++) {
-    const chars = base.split("");
-    chars[j] = probeChar;
-    counts[j] = checksumInt(moduleFn, chars.join("")) - cBase;
-  }
-
-  const total = counts.reduce((a, b) => a + b, 0);
-  const constant = cBase - baseCode * total;
-
-  const indexes: number[] = [];
-  for (let j = 0; j < HASH_LEN; j++) {
-    for (let k = 0; k < counts[j]; k++) indexes.push(j);
-  }
-
-  return { indexes, constant };
-}
-
-/**
- * Extracts the full dynamic signing rules from an obfuscated script source.
- *
- * @param source           raw JS of the OnlyFans signing webpack chunk
- * @param appToken         the app token (from app.js)
- * @param fallbackRevision used if the script has no `SENTRY_RELEASE` id
- */
-export function getRules(
-  source: string,
-  appToken: string,
-  fallbackRevision: string
-): DynamicRules {
-  const { modules, sandbox } = loadScript(source);
-
-  // Find the module that actually produces a sign value.
-  let moduleFn: SignModule | undefined;
-  let probe: SignResult | undefined;
-  for (const fn of modules) {
+function probeChecksum(signer: Signer, force: (h: string) => void) {
+  const BASE = 500;
+  const at = (changes: Record<number, number> = {}, path = "/api2/v2/probe", fill = BASE): number => {
+    const codes = new Array(HASH_LEN).fill(fill);
+    for (const [j, c] of Object.entries(changes)) codes[+j] = c;
+    const hash = String.fromCharCode(...codes);
+    force(hash);
+    let call;
     try {
-      const r = runSign(fn, "a".repeat(HASH_LEN));
-      moduleFn = fn;
-      probe = r;
-      break;
-    } catch {
-      // not the sign module, keep looking
+      call = signer(path);
+    } catch (e) {
+      return fail(`Sign function failed on a ${HASH_LEN}-character hash (does it read past position ${HASH_LEN - 1} or expect a different hash?): ${(e as Error).message}`);
     }
-  }
-  if (!moduleFn || !probe) {
-    throw new Error("Could not find a signing module in the script");
-  }
+    if (call.hashInputs.length !== 1) fail(`Expected the module to hash exactly once per sign, saw ${call.hashInputs.length}`);
+    return parseInt(parseSign(call.sign, hash).checksum, 16);
+  };
 
-  const parts = probe.sign.split(":");
-  if (parts.length !== 4) {
-    throw new Error(`Unexpected sign format: ${probe.sign}`);
-  }
-  const prefix = parts[0];
-  const suffix = parts[parts.length - 1];
-  const staticParam = probe.staticParam;
-  if (!staticParam) {
-    throw new Error("Failed to capture static_param");
-  }
+  const c0 = at();
+  if (at({}, "/api2/v2/other?x=1") !== c0) fail("Checksum changed with the path while the hash stayed fixed; it is not a function of the hash alone");
 
-  const { indexes, constant } = probeChecksum(moduleFn);
+  const deltas = Array.from({ length: HASH_LEN }, (_, j) => {
+    const d1 = at({ [j]: BASE + 1 }) - c0;
+    if (!Number.isInteger(d1) || d1 < 0) fail(`Checksum delta at position ${j} is ${d1}, expected a non-negative integer`);
+    const d2 = at({ [j]: BASE + 2 }) - c0;
+    if (d2 !== 2 * d1) fail(`Checksum is not linear at position ${j}: +1 gave ${d1}, +2 gave ${d2}`);
+    return d1;
+  });
 
-  const revision: string =
-    (sandbox &&
-      sandbox.window &&
-      sandbox.window.SENTRY_RELEASE &&
-      sandbox.window.SENTRY_RELEASE.id) ||
-    fallbackRevision;
+  for (let j = 0; j < HASH_LEN; j++)
+    for (let k = j + 1; k < HASH_LEN; k++) {
+      const d = at({ [j]: BASE + 1, [k]: BASE + 1 }) - c0;
+      if (d !== deltas[j] + deltas[k]) fail(`Checksum is not additive at positions ${j},${k}: expected ${deltas[j] + deltas[k]}, got ${d}`);
+    }
 
-  return {
+  const total = deltas.reduce((a, b) => a + b, 0);
+  if (!total) fail("Checksum does not depend on the hash");
+  const constant = c0 - BASE * total;
+  const far = at({}, undefined, 700);
+  if (far !== 700 * total + constant) fail(`Checksum model does not extrapolate: predicted ${700 * total + constant}, got ${far}`);
+
+  return { indexes: deltas.flatMap((n, j) => Array(n).fill(j)), constant };
+}
+
+export function getRules(source: string, appToken: string, fallbackRevision: string): DynamicRules {
+  const loaded = loadScript(source);
+  let forced = "a".repeat(HASH_LEN);
+  const signer = findSigner(loaded, { hash: () => forced, userId: () => 0 });
+  const probe = signer("/api2/v2/probe");
+  const { prefix, suffix } = parseSign(probe.sign, forced);
+  const static_param = (probe.hashInputs[0] ?? "").split("\n")[0] || fail("Failed to capture static_param");
+  const { indexes, constant } = probeChecksum(signer, (h) => (forced = h));
+
+  const rules: DynamicRules = {
     end: suffix,
     start: prefix,
     format: `${prefix}:{}:{:x}:${suffix}`,
     prefix,
     suffix,
-    revision,
+    revision: loaded.revision || fallbackRevision,
     app_token: appToken,
-    static_param: staticParam,
+    static_param,
     remove_headers: ["user_id"],
     checksum_indexes: indexes,
     checksum_constant: constant,
   };
+  validateRulesShape(rules);
+  rules.verified_samples = verifyRules(source, rules);
+  rules.rulegen_version = String(JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8")).version);
+  return rules;
 }

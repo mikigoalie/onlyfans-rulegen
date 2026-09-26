@@ -1,6 +1,6 @@
 {
   "name": "onlyfans-rulegen",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Fetches OnlyFans' obfuscated signing module and extracts the dynamic signing rules by executing it in a sandbox.",
   "main": "build/dynamic_rules.js",
   "scripts": {
@@ -8,7 +8,7 @@
     "build-dev": "npx tsc -w",
     "fetch": "node ./build/fetch.js",
     "dynamic-rules": "node ./build/dynamic_rules.js",
-    "test": "node ./build/dynamic_rules.js ./samples/obfuscated/202501231137-41432dce62.js 33d57ade8c02dbc5a333db99ff9ae26a"
+    "test": "npm run build && node --test \"build/test/*.test.js\""
   },
   "author": "",
   "license": "ISC",
