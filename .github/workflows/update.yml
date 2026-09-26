@@ -2,7 +2,7 @@ name: Generate dynamic rules
 
 on:
   schedule:
-    - cron: "17 */6 * * *"
+    - cron: "17 * * * *"
   workflow_dispatch:
     inputs:
       force:
@@ -11,6 +11,10 @@ on:
         default: false
 
 permissions: {}
+
+concurrency:
+  group: rulegen-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CURL_IMPERSONATE_VERSION: v2.2.3
@@ -25,6 +29,7 @@ jobs:
     outputs:
       changed: ${{ steps.fetch.outputs.changed }}
       revision: ${{ steps.fetch.outputs.revision }}
+      error: ${{ steps.fetch.outputs.error }}
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -79,6 +84,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      error: ${{ steps.validate.outputs.error }}
     env:
       REVISION: ${{ needs.extract.outputs.revision }}
     steps:
@@ -101,6 +108,7 @@ jobs:
         path: out
 
     - name: Validate rules without running the OnlyFans code
+      id: validate
       run: |
         set -euo pipefail
         node build/validate.js out/dynamic-rules.json "out/samples/obfuscated/$REVISION.js"
@@ -119,3 +127,33 @@ jobs:
         git config --local user.email "actions@github.com"
         git commit -m "dynamic-rules.json: $REVISION"
         git push
+
+  report:
+    needs: [extract, publish]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+    - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        EXTRACT_RESULT: ${{ needs.extract.result }}
+        PUBLISH_RESULT: ${{ needs.publish.result }}
+        ERROR: ${{ needs.extract.outputs.error || needs.publish.outputs.error }}
+      with:
+        script: |
+          const label = "rulegen-failure";
+          const { EXTRACT_RESULT: extract, PUBLISH_RESULT: publish, ERROR: error } = process.env;
+          const results = [extract, publish];
+          if (results.includes("cancelled")) return;
+          const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+          const open = (await github.paginate(github.rest.issues.listForRepo, { ...context.repo, labels: label, state: "open" })).filter((i) => !i.pull_request);
+          if (results.includes("failure")) {
+            const body = `[Run ${context.runId}](${run}) on \`${context.ref}\` failed (extract: ${extract}, publish: ${publish}). dynamic-rules.json was not changed.\n\n\`\`\`\n${error || "No error message was captured; see the run log."}\n\`\`\``;
+            if (open.length) await github.rest.issues.createComment({ ...context.repo, issue_number: open[0].number, body });
+            else await github.rest.issues.create({ ...context.repo, title: "Dynamic rules generation is failing", labels: [label], body });
+          } else
+            for (const issue of open) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: issue.number, body: `Resolved: [run ${context.runId}](${run}) succeeded.` });
+              await github.rest.issues.update({ ...context.repo, issue_number: issue.number, state: "closed" });
+            }

@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from "fs";
+import { appendFileSync, readFileSync, statSync } from "fs";
 import { basename } from "path";
 import { validateRulesShape } from "./shape";
 
@@ -10,6 +10,8 @@ try {
   if (samplePath && !statSync(samplePath).size) throw new Error(`${samplePath} is empty`);
   console.log(`${rulesPath} is valid (revision ${rules.revision})`);
 } catch (err) {
-  console.error("Validation failed:", (err as Error).message);
+  const msg = (err as Error).message;
+  console.error("Validation failed:", msg);
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `error=Validation failed: ${msg.replace(/\s+/g, " ")}\n`);
   process.exit(1);
 }

@@ -63,6 +63,8 @@ if (require.main === module)
   try {
     main(process.argv.slice(2));
   } catch (err) {
-    console.error("Fetch failed:", (err as Error).message);
+    const msg = (err as Error).message;
+    console.error("Fetch failed:", msg);
+    if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `error=Fetch failed: ${msg.replace(/\s+/g, " ")}\n`);
     process.exit(1);
   }
