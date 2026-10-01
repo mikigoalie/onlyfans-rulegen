@@ -18,6 +18,12 @@ const cache = new Map<string, DynamicRules>();
 const rulesFor = (f: string) => cache.get(f) ?? cache.set(f, getRules(load(f), TOKEN, basename(f, ".js"))).get(f)!;
 const latest = samples[samples.length - 1];
 const rev = basename(latest, ".js");
+// The minifier renames the sign export's identifiers between builds (n.A=W=> vs c.A=n=>), so locate it instead of hardcoding it.
+const signExport = (src: string) => {
+  const m = [...src.matchAll(/,([A-Za-z_$][\w$]*)\.A=([A-Za-z_$][\w$]*=>)/g)];
+  assert.equal(m.length, 1, `expected exactly one sign export, found ${m.length}`);
+  return { text: m[0][0].slice(1), exports: m[0][1], fn: m[0][2] };
+};
 
 test("there are samples to test against", () => assert.ok(samples.length, `no samples in ${DIR}`));
 
@@ -44,8 +50,8 @@ test("a non-linear checksum is rejected", () => {
 
 test("a sample whose sign export is renamed still extracts the same rules", () => {
   const src = load(latest);
-  assert.ok(src.includes("n.A=W=>"), "could not find the sign export");
-  const { rulegen_version: _a, ...actual } = getRules(src.replace("n.A=W=>", "n.Zq=W=>"), TOKEN, rev);
+  const ex = signExport(src);
+  const { rulegen_version: _a, ...actual } = getRules(src.replace(ex.text, `${ex.exports}.Zq=${ex.fn}`), TOKEN, rev);
   const { rulegen_version: _b, ...expected } = rulesFor(latest);
   assert.deepEqual(actual, expected);
 });
@@ -53,14 +59,16 @@ test("a sample whose sign export is renamed still extracts the same rules", () =
 test("a sample exported through webpack's .d helper still extracts", () => {
   const src = load(latest);
   const req = src.match(/:function\(\w+,\w+,(\w+)\)\{/)?.[1];
-  const out = src.replace(/,n\.A=(W=>)/, `,${req}.d(n,{B:()=>__sign});var __sign=$1`);
+  const ex = signExport(src);
+  const out = src.replace(`,${ex.text}`, `,${req}.d(${ex.exports},{B:()=>__sign});var __sign=${ex.fn}`);
   assert.notEqual(out, src, "could not rewrite the export");
   assert.equal(getRules(out, TOKEN, "x").static_param, rulesFor(latest).static_param);
 });
 
 test("a sample with no sign function is rejected", () => {
   const src = load(latest);
-  const out = src.replace("n.A=W=>", "n.A=()=>({time:1}),W=>");
+  const ex = signExport(src);
+  const out = src.replace(ex.text, `${ex.exports}.A=()=>({time:1}),${ex.fn}`);
   assert.notEqual(out, src);
   assert.throws(() => getRules(out, TOKEN, rev), /No sign function found/);
 });

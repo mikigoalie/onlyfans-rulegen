@@ -29,7 +29,7 @@ jobs:
     outputs:
       changed: ${{ steps.fetch.outputs.changed }}
       revision: ${{ steps.fetch.outputs.revision }}
-      error: ${{ steps.fetch.outputs.error }}
+      error: ${{ steps.test.outputs.error || steps.fetch.outputs.error }}
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -41,10 +41,15 @@ jobs:
         cache: "npm"
 
     - name: Build and test against every committed sample
+      id: test
       run: |
         set -euo pipefail
         npm ci
-        npm test
+        if ! npm test 2>&1 | tee test.log; then
+          failed=$(grep -E '^✖ ' test.log | sort -u | head -5 | tr '\n' ' ' || true)
+          echo "error=npm test failed: ${failed:-see the run log}" >> "$GITHUB_OUTPUT"
+          exit 1
+        fi
 
     - name: Cache curl-impersonate
       id: cache-curl-impersonate
